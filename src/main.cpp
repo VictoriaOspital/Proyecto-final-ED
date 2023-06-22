@@ -1,12 +1,11 @@
 #include <Wire.h>
 #include "MAX30105.h"
 #include "heartRate.h"
-#include <WiFi.h>
-#include <WebServer.h>
-#include <Adafruit_Sensor.h>
-#include <DHT.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <DHT.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
 MAX30105 particleSensor;
 const byte RATE_SIZE = 4; // Increase this for more averaging. 4 is good.
@@ -16,62 +15,50 @@ long lastBeat = 0; // Time at which the last beat occurred
 float beatsPerMinute;
 int beatAvg;
 
-
-const char* ssid = "wifi handle ";
-const char* password = "password"; 
-
+const char* ssid = "Fibertel WiFi376 2.4GHz";
+const char* password = "01423472526"; 
 
 WebServer server(80);
-DHT dht(14, DHT11);
-OneWire oneWireObjeto(4);
-DallasTemperature sensorDS18B20(&oneWireObjeto);
-float tempDS18B20 = sensorDS18B20.getTempCByIndex(0);
 
+// DHT11 Temperature and Humidity Sensor
+const int DHTPIN = 14;
+const int DHTTYPE = DHT11;
+DHT dht(DHTPIN, DHTTYPE);
+
+// DS18B20 Temperature Sensor
+const int pinDatosDQ = 4;
+OneWire oneWireObjeto(pinDatosDQ);
+DallasTemperature sensorDS18B20(&oneWireObjeto);
+float temperatureDS18B20;
 
 void handleRoot() {
-  float h, t, f;
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+  float f = dht.readTemperature(true);
 
-  h = dht.readHumidity();
-  t = dht.readTemperature();     // in Celsius
-  f = dht.readTemperature(true); // in Fahrenheit
-
-  if (isnan(h) || isnan(t) || isnan(f))   // Failed measurement?
-  {
-    server.send(500, "text/plain", "Error en la medición del sensor");
-  }
-  else
-  {
-    String html = "<html><body>";
-    html += "<h1>Sensor Data</h1>";
-    html += "<p>";
-    html += "<span style='color:";
-    
-    // Cambiar el color de la letra a rojo si la temperatura es mayor a 37°C o el pulso es mayor a 120 BPM
-    if (tempDS18B20 > 37 || beatsPerMinute > 120) {
-      html += "red";
-    } else {
-      html += "black";
-    }
-    
-    html += "'>";
-    html += "BPM: " + String(beatsPerMinute) + "<br>";
-    html += "Humidity: " + String(h) + "%<br>";
-    html += "Temperature (C): " + String(t) + "<br>";
-    html += "Temperature (F): " + String(f);
-    html += "</span>";
-    html += "</p>";
-    html += "</body></html>";
-
-    server.send(200, "text/html", html);
-  }
+  String html = "<html><body>";
+  html += "<h1>BPM Actual:</h1>";
+  html += "<h2 style='color:";
+  html += (beatsPerMinute > 120) ? "red" : "black";
+  html += "'>" + String(beatsPerMinute) + "</h2>";
+  html += "<h1>BPM Promedio:</h1>";
+  html += "<h2>" + String(beatAvg) + "</h2>";
+  html += "<h1>Humedad y Temperatura Ambiental:</h1>";
+  html += "<h2>Humedad: " + String(h) + "%</h2>";
+  html += "<h2>Temperatura: " + String(t) + "°C</h2>";
+  html += "<h1>Temperatura Corporal:</h1>";
+  html += "<h2>Temperatura: " + String(temperatureDS18B20) + "°C</h2>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Initializing...");
 
+  // Initialize MAX30105 sensor
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("MAX30105 was not found. Please check wiring/power. ");
+    Serial.println("MAX30105 was not found. Please check wiring/power.");
     while (1);
   }
   Serial.println("Place your index finger on the sensor with steady pressure.");
@@ -79,6 +66,12 @@ void setup() {
   particleSensor.setup();
   particleSensor.setPulseAmplitudeRed(0x0A);
   particleSensor.setPulseAmplitudeGreen(0);
+
+  // Initialize DHT11 sensor
+  dht.begin();
+
+  // Initialize DS18B20 sensor
+  sensorDS18B20.begin();
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -90,10 +83,6 @@ void setup() {
   server.on("/", handleRoot);
   server.begin();
   Serial.println("Web server started");
-
-  dht.begin();
-
-  sensorDS18B20.begin();
 }
 
 void loop() {
@@ -102,28 +91,22 @@ void loop() {
   long irValue = particleSensor.getIR();
 
   if (checkForBeat(irValue) == true) {
-    long delta = millis() - lastBeat;
     lastBeat = millis();
-
-    beatsPerMinute = 60 / (delta / 1000.0);
+    beatsPerMinute = 60 / ((lastBeat - lastBeat) / 1000.0);
 
     if (beatsPerMinute < 255 && beatsPerMinute > 20) {
       rates[rateSpot++] = (byte)beatsPerMinute;
       rateSpot %= RATE_SIZE;
 
       beatAvg = 0;
-      for (byte x = 0 ; x < RATE_SIZE ; x++)
+      for (byte x = 0; x < RATE_SIZE; x++)
         beatAvg += rates[x];
       beatAvg /= RATE_SIZE;
     }
   }
 
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-  float f = dht.readTemperature(true);
-
   sensorDS18B20.requestTemperatures();
-  
+  temperatureDS18B20 = sensorDS18B20.getTempCByIndex(0);
 
   Serial.print("IR=");
   Serial.print(irValue);
@@ -132,19 +115,26 @@ void loop() {
   Serial.print(", Avg BPM=");
   Serial.print(beatAvg);
 
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+  float f = dht.readTemperature(true);
+
+  if (isnan(h) || isnan(t) || isnan(f)) {
+    Serial.println(" Error en la medición del sensor DHT11");
+  } else {
+    Serial.print(", Humedad=");
+    Serial.print(h);
+    Serial.print("%, Temperatura=");
+    Serial.print(t);
+    Serial.print("°C");
+  }
+
+  Serial.print(", Temperatura (DS18B20)=");
+  Serial.print(temperatureDS18B20);
+  Serial.println("°C");
+
   if (irValue < 50000)
     Serial.print(" No finger?");
 
-  Serial.print(", Humidity=");
-  Serial.print(h);
-  Serial.print(", Temperature (C)=");
-  Serial.print(t);
-  Serial.print(", Temperature (F)=");
-  Serial.print(f);
-  Serial.print(", DS18B20 Temperature=");
-  Serial.print(tempDS18B20);
-
-  Serial.println();
-
-  delay(2000);
+  delay(1000);
 }
